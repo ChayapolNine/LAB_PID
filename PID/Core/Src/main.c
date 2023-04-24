@@ -41,6 +41,9 @@ void velocity();
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+DMA_HandleTypeDef hdma_adc1;
+
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim3;
 TIM_HandleTypeDef htim5;
@@ -50,6 +53,8 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 uint32_t QEIReadRaw;
+uint32_t JoystckEnable;
+uint32_t Position_Joystick[2];
 typedef struct _QEIStructure{
 uint32_t data[2]; //Position data container
 uint32_t timestamp[2];
@@ -82,10 +87,12 @@ float error; // error
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_TIM5_Init(void);
+static void MX_ADC1_Init(void);
 /* USER CODE BEGIN PFP */
 float control_interrupt();
 /* USER CODE END PFP */
@@ -123,15 +130,18 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_TIM2_Init();
   MX_TIM3_Init();
   MX_TIM5_Init();
+  MX_ADC1_Init();
   /* USER CODE BEGIN 2 */
 	HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_1|TIM_CHANNEL_2);
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
 	HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
 	HAL_TIM_Base_Start(&htim5);
+	HAL_ADC_Start_DMA(&hadc1, Position_Joystick, 2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -143,27 +153,44 @@ int main(void)
     /* USER CODE BEGIN 3 */
 	  //PID control position
 	  static uint64_t timestamp = 0;
-	  if(HAL_GetTick() >= timestamp){
-			  timestamp = HAL_GetTick()+100;
+	  static uint64_t motortime = 0;
+	  uint64_t current_time = micros();
+	  if(current_time >= timestamp){
+			  timestamp = current_time + 1000;
 			  velocity(); // velocity
+		if(JoystckEnable == 0){
 			  if(SetDegree < 0)SetDegree = 0; // minimum value
 			  if(SetDegree > 1800)SetDegree = 1800; // maximum value
 			  QEIReadRaw = __HAL_TIM_GET_COUNTER(&htim2); // Read QEI
 			  ReadDegree = QEIReadRaw/8192.0 * 360; // pluse to degree
 			  error = SetDegree - ReadDegree;
 			  DegreeFeedback = control_interrupt(); // PID function
-
-		 if(error > 0){ //setpoint > read_encoder
-			 if(error < 1.0)DegreeFeedback = 0; //Limit Position
-			 __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,0);
-			 __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,DegreeFeedback);
-		 }
-		 if(error < 0){ //setpoint < read_encoder
-			 if(error*-1 < 1.0)DegreeFeedback = 0; //Limit Position
-			 __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,DegreeFeedback*-1);
-			 __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,100);
-		 }
-	  }
+			 if(error > 0){ //setpoint > read_encoder
+				 if(error < 1.0)DegreeFeedback = 0; //Limit Position
+				 __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,0);
+				 __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,DegreeFeedback);
+			 }
+			 if(error < 0){ //setpoint < read_encoder
+				 if(error*-1 < 1.0)DegreeFeedback = 0; //Limit Position
+				 __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,DegreeFeedback*-1);
+				 __HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,100);
+			 }
+		}
+		else if(JoystckEnable == 1){
+			if(Position_Joystick[0] < 100){
+				__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,100*-1);
+				__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,100);
+			}
+			if(Position_Joystick[0] > 800){
+				__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,0);
+				__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,100);
+			}
+			if(Position_Joystick[0] > 680 && Position_Joystick[0] < 730){
+				__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_1,0);
+				__HAL_TIM_SET_COMPARE(&htim3,TIM_CHANNEL_2,0);
+			}
+		}
+	 }
   }
   /* USER CODE END 3 */
 }
@@ -212,6 +239,67 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc1.Init.Resolution = ADC_RESOLUTION_10B;
+  hadc1.Init.ScanConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.DMAContinuousRequests = ENABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_8;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_9;
+  sConfig.Rank = 2;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
 }
 
 /**
@@ -405,6 +493,22 @@ static void MX_USART2_UART_Init(void)
 }
 
 /**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMA2_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA2_Stream0_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA2_Stream0_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA2_Stream0_IRQn);
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -434,6 +538,16 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
 }
 
@@ -474,7 +588,17 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 	}
 }
 uint64_t micros(){
-	return __HAL_TIM_GET_COUNTER(&htim5)+_micros;
+	return __HAL_TIM_GET_COUNTER(&htim5) +_micros;
+}
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+	if(GPIO_Pin == GPIO_PIN_13){
+		//HAL_GPIO_TogglePin(GPIOA, GPIO_PIN_5);
+		JoystckEnable += 1;
+		if(JoystckEnable == 0)JoystckEnable = 1;
+		else if(JoystckEnable ==1)JoystckEnable = 0;
+	}
+
 }
 /* USER CODE END 4 */
 
